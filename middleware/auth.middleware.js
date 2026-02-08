@@ -18,11 +18,14 @@ const authMiddleware = async (req, res, next) => {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      if (decoded.type !== 'admin') {
+      // Accept both 'admin' and 'admin_access' token types
+      if (decoded.type !== 'admin' && decoded.type !== 'admin_access') {
         return res.status(401).json({ message: 'Invalid token type.' });
       }
       
-      const admin = await Admin.findById(decoded.id);
+      // Support both 'id' and 'adminId' in token payload
+      const adminId = decoded.id || decoded.adminId;
+      const admin = await Admin.findById(adminId);
       
       if (!admin || admin.status !== 'ACTIVE') {
         return res.status(401).json({ message: 'Invalid or disabled admin.' });
