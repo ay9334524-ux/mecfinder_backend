@@ -106,7 +106,7 @@ const server = http.createServer(app);
 
 // Start server
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/mecfinder';
+const MONGO_URI = process.env.MONGO_URI ;
 
 const startServer = async () => {
   try {
@@ -119,6 +119,7 @@ const startServer = async () => {
       family: 4,                // Use IPv4
     });
     logger.info('✅ Connected to MongoDB');
+    logger.info(MONGO_URI);
 
     // Connect to Redis
     try {
