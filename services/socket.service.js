@@ -6,8 +6,11 @@ const redisService = require('./redis.service');
 class SocketService {
   constructor() {
     this.io = null;
-    this.userSockets = new Map(); // userId -> socketId (local cache)
-    this.mechanicSockets = new Map(); // mechanicId -> socketId (local cache)
+    // Local cache (for fast lookups on this instance)
+    // IMPORTANT: These are NOT authoritative — use room-based emission for multi-server
+    this.userSockets = new Map(); // userId -> socketId (local cache only)
+    this.mechanicSockets = new Map(); // mechanicId -> socketId (local cache only)
+    this.pendingOffline = new Map(); // userId -> timeoutId (for disconnect grace period)
     this.pubClient = null;
     this.subClient = null;
   }
@@ -109,7 +112,14 @@ class SocketService {
     this.io.on('connection', (socket) => {
       console.log(`📱 ${socket.userType} connected: ${socket.userId}`);
 
-      // Store socket mapping
+      // Clear any pending offline timeout (user/mechanic reconnected)
+      if (this.pendingOffline.has(socket.userId)) {
+        clearTimeout(this.pendingOffline.get(socket.userId));
+        this.pendingOffline.delete(socket.userId);
+        console.log(`🔄 Cleared pending offline for ${socket.userId} (reconnected)`);
+      }
+
+      // Store socket mapping (local cache)
       if (socket.userType === 'MECHANIC') {
         this.mechanicSockets.set(socket.userId, socket.id);
         socket.join(`mechanic:${socket.userId}`);
@@ -180,13 +190,24 @@ class SocketService {
         });
       }
 
-      // Update MongoDB
+      // Update MongoDB — write BOTH GeoJSON location AND legacy lastLocation
       const Mechanic = require('../models/Mechanic');
       await Mechanic.findByIdAndUpdate(mechanicId, {
+        // GeoJSON for $nearSphere queries
+        'location.type': 'Point',
+        'location.coordinates': [longitude, latitude], // GeoJSON: [lng, lat]
+        // Legacy flat fields (backward compat)
         'lastLocation.lat': latitude,
         'lastLocation.lng': longitude,
         'lastLocation.updatedAt': new Date(),
+        // Heartbeat: refresh last active time
+        lastActiveAt: new Date(),
       });
+
+      // Refresh Redis presence TTL (mechanic is alive)
+      if (redisService.isConnected) {
+        await redisService.set(`mechanic:online:${mechanicId}`, 'true', 120); // 2 min TTL
+      }
 
       // Broadcast to users tracking this mechanic
       this.io.to(`tracking:${mechanicId}`).emit('mechanic:location', {
@@ -352,6 +373,15 @@ class SocketService {
         message: this.getStatusMessage(status),
       });
 
+      // Broadcast status update to mechanic (for history updates)
+      this.emitToUser(booking.mechanicId.toString(), 'booking:status:update', {
+        bookingId: booking._id,
+        status,
+        completedAt: booking.completedAt,
+        earnings: booking.earnings,
+        message: this.getStatusMessage(status),
+      });
+
       socket.emit('booking:status:ack', { success: true, status });
     } catch (error) {
       console.error('Error updating booking status:', error);
@@ -376,12 +406,58 @@ class SocketService {
 
   /**
    * Handle socket disconnection
+   * PRODUCTION: If mechanic disconnects mid-request, auto-skip to next mechanic
    */
   handleDisconnect(socket) {
     console.log(`📴 ${socket.userType} disconnected: ${socket.userId}`);
 
     if (socket.userType === 'MECHANIC') {
       this.mechanicSockets.delete(socket.userId);
+      
+      // Mark mechanic as offline after grace period (30s)
+      // They might just be switching networks
+      const mechanicId = socket.userId;
+      
+      const timeoutId = setTimeout(async () => {
+        try {
+          // Remove from pending map
+          this.pendingOffline.delete(mechanicId);
+          
+          // Check if they reconnected (would have new socket in map)
+          if (this.mechanicSockets.has(mechanicId)) {
+            return; // They reconnected, don't mark offline
+          }
+
+          const Mechanic = require('../models/Mechanic');
+          
+          // Check if mechanic is in an active booking queue
+          const bookingQueueService = require('./bookingQueue.service');
+          for (const [bookingId, queueData] of bookingQueueService.activeQueues) {
+            const currentMechanic = queueData.mechanics[queueData.currentIndex];
+            if (currentMechanic?.id === mechanicId) {
+              console.log(`⚡ Mechanic ${mechanicId} disconnected during active queue for booking ${bookingId} — auto-skipping`);
+              await bookingQueueService.skipToNextMechanic(bookingId, 'mechanic_disconnected');
+              break;
+            }
+          }
+
+          // Mark offline in DB (but don't touch isBusy — they may have an active job)
+          const mechanic = await Mechanic.findById(mechanicId).select('isBusy currentBookingId');
+          if (mechanic && !mechanic.isBusy && !mechanic.currentBookingId) {
+            await Mechanic.findByIdAndUpdate(mechanicId, { isOnline: false });
+          }
+
+          // Remove from Redis presence
+          if (redisService.isConnected) {
+            await redisService.delete(`mechanic:online:${mechanicId}`);
+          }
+        } catch (error) {
+          console.error('Error handling mechanic disconnect:', error.message);
+        }
+      }, 30000); // 30 second grace period
+      
+      // Store timeout reference so we can cancel on reconnect
+      this.pendingOffline.set(mechanicId, timeoutId);
     } else {
       this.userSockets.delete(socket.userId);
     }
@@ -403,6 +479,7 @@ class SocketService {
 
   /**
    * Broadcast new booking to nearby mechanics
+   * PRODUCTION: Uses room-based emission which works across multiple server instances
    */
   async broadcastNewBooking(booking, nearbyMechanics) {
     console.log(`📢 Broadcasting booking to ${nearbyMechanics.length} mechanics`);
@@ -425,7 +502,6 @@ class SocketService {
 
     for (const mechanic of nearbyMechanics) {
       const mechanicId = mechanic._id?.toString() || mechanic.toString();
-      const socketId = this.mechanicSockets.get(mechanicId);
       
       // Add distance for this mechanic
       const dataWithDistance = {
@@ -433,22 +509,10 @@ class SocketService {
         distance: mechanic.distance || null,
       };
       
-      console.log(`📤 Sending to mechanic ${mechanicId}, socketId: ${socketId}`);
-      
-      if (socketId) {
-        const socket = this.io.sockets.sockets.get(socketId);
-        if (socket) {
-          socket.join(`booking:${booking._id}`);
-          socket.emit('booking:new', dataWithDistance);
-          console.log(`✅ Sent booking:new to mechanic ${mechanicId}`);
-        } else {
-          console.log(`❌ Socket not found for mechanic ${mechanicId}`);
-        }
-      } else {
-        // Try room-based emission
-        this.io.to(`mechanic:${mechanicId}`).emit('booking:new', dataWithDistance);
-        console.log(`📤 Sent via room to mechanic:${mechanicId}`);
-      }
+      // ALWAYS use room-based emission — works across multiple server instances
+      // The mechanic joins room `mechanic:${mechanicId}` on connect, which is synced via Redis adapter
+      this.io.to(`mechanic:${mechanicId}`).emit('booking:new', dataWithDistance);
+      console.log(`📤 Sent booking:new to mechanic:${mechanicId} via room`);
     }
   }
 
@@ -462,20 +526,14 @@ class SocketService {
 
   /**
    * Notify mechanic of payment received
+   * PRODUCTION: Uses room-based emission which works across multiple server instances
    */
   notifyPaymentReceived(mechanicId, data) {
     if (!mechanicId) return;
     
-    const socketId = this.mechanicSockets.get(mechanicId);
-    if (socketId) {
-      const socket = this.io.sockets.sockets.get(socketId);
-      if (socket) {
-        socket.emit('payment:received', data);
-        console.log(`💰 Payment notification sent to mechanic ${mechanicId}`);
-      }
-    }
-    // Also try room-based emission
+    // Always use room-based emission — works across multiple server instances
     this.io.to(`mechanic:${mechanicId}`).emit('payment:received', data);
+    console.log(`💰 Payment notification sent to mechanic ${mechanicId}`);
   }
 
   /**

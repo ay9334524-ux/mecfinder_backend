@@ -1,116 +1,166 @@
 const axios = require('axios');
+const twilio = require('twilio');
 
 // Security: All credentials must come from environment variables
 // DO NOT hardcode credentials in source code
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_VERIFY_SID = process.env.TWILIO_VERIFY_SID;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER || 'whatsapp:+14155238886'; // Twilio Sandbox WhatsApp number
+const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
 
 // DEV MODE: Only enable if EXPLICITLY set via DEV_OTP=true AND not production
 // SECURITY: In production, this MUST be disabled
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const DEV_MODE = !IS_PRODUCTION && process.env.DEV_OTP === 'true';
-const DEV_OTP = '123456';
+
+// Generate random 6-digit OTP
+const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
+
+// In-memory OTP storage (should use Redis in production)
+const otpStore = new Map();
 
 // Startup validation
 if (IS_PRODUCTION) {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SID) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     console.error('❌ FATAL: Twilio credentials required in production');
     process.exit(1);
   }
-  console.log('✅ Twilio configured for production');
+  console.log('✅ Twilio WhatsApp OTP service configured for production');
 } else if (DEV_MODE) {
-  console.warn('⚠️ DEV MODE: Using fixed OTP 123456 - NOT FOR PRODUCTION!');
-} else if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SID) {
+  console.warn('⚠️ DEV MODE: Generating OTP via WhatsApp - NOT FOR PRODUCTION!');
+} else if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
   console.warn('⚠️ Twilio credentials not configured. Set DEV_OTP=true to use dev mode.');
 }
 
-const TWILIO_BASE_URL = TWILIO_VERIFY_SID 
-  ? `https://verify.twilio.com/v2/Services/${TWILIO_VERIFY_SID}`
-  : '';
-
-const twilioAuth = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
-  ? Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64')
-  : '';
+// Initialize Twilio client
+const client = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
+  ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+  : null;
 
 const sendOtp = async (phone) => {
-  // DEV MODE: Skip Twilio, use fixed OTP
-  if (DEV_MODE) {
-    console.log(`📱 [DEV MODE] OTP for ${phone}: ${DEV_OTP}`);
-    return {
-      success: true,
-      status: 'pending',
-      sid: 'dev-mode-sid',
-      devOtp: DEV_OTP
-    };
-  }
-
   try {
-    const response = await axios.post(
-      `${TWILIO_BASE_URL}/Verifications`,
-      new URLSearchParams({
-        To: phone,
-        Channel: 'sms'
-      }),
-      {
-        headers: {
-          'Authorization': `Basic ${twilioAuth}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
+    // Generate OTP
+    const otp = generateOtp();
+    
+    console.log(`📱 Generating OTP for ${phone}: ${otp}`);
+
+    // Format phone number for WhatsApp (ensure it's in E.164 format)
+    const formattedPhone = phone.startsWith('whatsapp:') ? phone : `whatsapp:${phone}`;
+
+    // DEV MODE: Log OTP instead of sending
+    if (DEV_MODE) {
+      console.log(`📱 [DEV MODE] WhatsApp OTP for ${phone}: ${otp}`);
+      otpStore.set(phone, { otp, attempts: 0, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return {
+        success: true,
+        status: 'pending',
+        sid: 'dev-mode-sid',
+        message: 'OTP generated for development'
+      };
+    }
+
+    // Production: Send via Twilio WhatsApp API
+    if (!client) {
+      throw new Error('Twilio client not initialized');
+    }
+
+    const message = await client.messages.create({
+      from: TWILIO_PHONE_NUMBER,
+      to: formattedPhone,
+      body: `Your MecFinder verification code is: ${otp}\n\nThis code will expire in 5 minutes.`
+    });
+
+    console.log(`✅ OTP sent via WhatsApp to ${phone}, SID: ${message.sid}`);
+
+    // Store OTP with expiry (5 minutes)
+    otpStore.set(phone, { 
+      otp, 
+      attempts: 0, 
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      sid: message.sid
+    });
 
     return {
       success: true,
-      status: response.data.status,
-      sid: response.data.sid
+      status: 'sent',
+      sid: message.sid,
+      message: 'OTP sent via WhatsApp'
     };
   } catch (error) {
-    console.error('Twilio Send OTP Error:', error.response?.data || error.message);
+    console.error('❌ Twilio WhatsApp Send OTP Error:', error.message);
     return {
       success: false,
-      error: error.response?.data?.message || 'Failed to send OTP'
+      error: error.message || 'Failed to send OTP via WhatsApp'
     };
   }
 };
 
 const verifyOtp = async (phone, code) => {
-  // DEV MODE: Accept fixed OTP
-  if (DEV_MODE) {
-    const isValid = code === DEV_OTP;
-    console.log(`📱 [DEV MODE] Verifying OTP for ${phone}: ${code} - ${isValid ? '✅ Valid' : '❌ Invalid'}`);
-    return {
-      success: isValid,
-      status: isValid ? 'approved' : 'denied',
-      valid: isValid
-    };
-  }
-
   try {
-    const response = await axios.post(
-      `${TWILIO_BASE_URL}/VerificationCheck`,
-      new URLSearchParams({
-        To: phone,
-        Code: code
-      }),
-      {
-        headers: {
-          'Authorization': `Basic ${twilioAuth}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
+    const otpData = otpStore.get(phone);
 
-    return {
-      success: response.data.status === 'approved',
-      status: response.data.status,
-      valid: response.data.valid
-    };
+    // Check if OTP exists
+    if (!otpData) {
+      console.log(`❌ No OTP found for ${phone}`);
+      return {
+        success: false,
+        status: 'denied',
+        valid: false,
+        error: 'OTP not found or expired'
+      };
+    }
+
+    // Check if OTP has expired
+    if (Date.now() > otpData.expiresAt) {
+      console.log(`❌ OTP expired for ${phone}`);
+      otpStore.delete(phone);
+      return {
+        success: false,
+        status: 'expired',
+        valid: false,
+        error: 'OTP has expired'
+      };
+    }
+
+    // Check maximum attempts (3 attempts allowed)
+    if (otpData.attempts >= 3) {
+      console.log(`❌ Max attempts exceeded for ${phone}`);
+      otpStore.delete(phone);
+      return {
+        success: false,
+        status: 'denied',
+        valid: false,
+        error: 'Maximum OTP verification attempts exceeded'
+      };
+    }
+
+    // Verify OTP
+    const isValid = code.toString().trim() === otpData.otp.toString().trim();
+
+    if (isValid) {
+      console.log(`✅ OTP verified successfully for ${phone}`);
+      otpStore.delete(phone); // Delete after successful verification
+      return {
+        success: true,
+        status: 'approved',
+        valid: true
+      };
+    } else {
+      console.log(`❌ Invalid OTP for ${phone}. Attempt: ${otpData.attempts + 1}/3`);
+      otpData.attempts++;
+      
+      return {
+        success: false,
+        status: 'denied',
+        valid: false,
+        error: `Invalid OTP. Attempts remaining: ${3 - otpData.attempts}`
+      };
+    }
   } catch (error) {
-    console.error('Twilio Verify OTP Error:', error.response?.data || error.message);
+    console.error('❌ Twilio WhatsApp Verify OTP Error:', error.message);
     return {
       success: false,
-      error: error.response?.data?.message || 'Failed to verify OTP'
+      error: error.message || 'Failed to verify OTP'
     };
   }
 };

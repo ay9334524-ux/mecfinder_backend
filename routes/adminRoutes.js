@@ -11,9 +11,13 @@ const {
   getAllUsers,
   getUserById,
   updateUserStatus,
+  banUser,
+  unbanUser,
   getAllMechanics,
   getMechanicById,
   updateMechanicStatus,
+  banMechanic,
+  unbanMechanic,
   getAllBookings,
   getBookingById,
   updateBookingStatus,
@@ -50,11 +54,15 @@ router.get('/dashboard/stats', authMiddleware, getDashboardStats);
 router.get('/users', authMiddleware, requireAdmin, getAllUsers);
 router.get('/users/:id', authMiddleware, requireAdmin, getUserById);
 router.patch('/users/:id/status', authMiddleware, requireAdmin, updateUserStatus);
+router.post('/users/:id/ban', authMiddleware, requireAdmin, banUser);
+router.post('/users/:id/unban', authMiddleware, requireAdmin, unbanUser);
 
 // Mechanic management routes (Admin only)
 router.get('/mechanics', authMiddleware, requireAdmin, getAllMechanics);
 router.get('/mechanics/:id', authMiddleware, requireAdmin, getMechanicById);
 router.patch('/mechanics/:id/status', authMiddleware, requireAdmin, updateMechanicStatus);
+router.post('/mechanics/:id/ban', authMiddleware, requireAdmin, banMechanic);
+router.post('/mechanics/:id/unban', authMiddleware, requireAdmin, unbanMechanic);
 
 // Booking management routes (Support and above)
 router.get('/bookings', authMiddleware, requireSupport, getAllBookings);

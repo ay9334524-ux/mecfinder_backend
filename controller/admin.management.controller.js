@@ -95,6 +95,86 @@ const updateUserStatus = asyncHandler(async (req, res) => {
   ApiResponse.success(res, { user }, `User ${status === 'BANNED' ? 'banned' : 'activated'} successfully`);
 });
 
+/**
+ * Ban a user (permanent or temporary)
+ * POST /api/admin/users/:id/ban
+ */
+const banUser = asyncHandler(async (req, res) => {
+  const { banType, reason, duration } = req.body;
+  // banType: 'PERMANENT' or 'TEMPORARY'
+  // duration: number of days (for TEMPORARY ban)
+
+  if (!['PERMANENT', 'TEMPORARY'].includes(banType)) {
+    return ApiResponse.badRequest(res, 'Invalid ban type. Must be PERMANENT or TEMPORARY');
+  }
+
+  if (!reason) {
+    return ApiResponse.badRequest(res, 'Ban reason is required');
+  }
+
+  if (banType === 'TEMPORARY' && (!duration || duration < 1)) {
+    return ApiResponse.badRequest(res, 'Duration (in days) is required for temporary ban');
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) {
+    return ApiResponse.notFound(res, 'User not found');
+  }
+
+  // Calculate ban expiry for temporary bans
+  let banExpiresAt = null;
+  if (banType === 'TEMPORARY') {
+    banExpiresAt = new Date();
+    banExpiresAt.setDate(banExpiresAt.getDate() + parseInt(duration));
+  }
+
+  // Update user with ban info
+  user.status = 'BANNED';
+  user.banInfo = {
+    isBanned: true,
+    banType,
+    banReason: reason,
+    bannedAt: new Date(),
+    bannedBy: req.admin.id,
+    banExpiresAt,
+    unbanReason: null,
+    unbannedAt: null,
+    unbannedBy: null,
+  };
+  // Clear refresh token to force logout
+  user.refreshTokenHash = null;
+  await user.save();
+
+  ApiResponse.success(res, { user }, `User banned ${banType === 'PERMANENT' ? 'permanently' : `for ${duration} days`}`);
+});
+
+/**
+ * Unban a user
+ * POST /api/admin/users/:id/unban
+ */
+const unbanUser = asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+
+  const user = await User.findById(req.params.id);
+  if (!user) {
+    return ApiResponse.notFound(res, 'User not found');
+  }
+
+  if (!user.banInfo?.isBanned) {
+    return ApiResponse.badRequest(res, 'User is not banned');
+  }
+
+  // Update user - remove ban
+  user.status = 'ACTIVE';
+  user.banInfo.isBanned = false;
+  user.banInfo.unbanReason = reason || 'Unbanned by admin';
+  user.banInfo.unbannedAt = new Date();
+  user.banInfo.unbannedBy = req.admin.id;
+  await user.save();
+
+  ApiResponse.success(res, { user }, 'User unbanned successfully');
+});
+
 // ==================== MECHANIC MANAGEMENT ====================
 
 /**
@@ -212,6 +292,87 @@ const updateMechanicStatus = asyncHandler(async (req, res) => {
   }
 
   ApiResponse.success(res, { mechanic }, `Mechanic ${status.toLowerCase()} successfully`);
+});
+
+/**
+ * Ban a mechanic (permanent or temporary)
+ * POST /api/admin/mechanics/:id/ban
+ */
+const banMechanic = asyncHandler(async (req, res) => {
+  const { banType, reason, duration } = req.body;
+  // banType: 'PERMANENT' or 'TEMPORARY'
+  // duration: number of days (for TEMPORARY ban)
+
+  if (!['PERMANENT', 'TEMPORARY'].includes(banType)) {
+    return ApiResponse.badRequest(res, 'Invalid ban type. Must be PERMANENT or TEMPORARY');
+  }
+
+  if (!reason) {
+    return ApiResponse.badRequest(res, 'Ban reason is required');
+  }
+
+  if (banType === 'TEMPORARY' && (!duration || duration < 1)) {
+    return ApiResponse.badRequest(res, 'Duration (in days) is required for temporary ban');
+  }
+
+  const mechanic = await Mechanic.findById(req.params.id);
+  if (!mechanic) {
+    return ApiResponse.notFound(res, 'Mechanic not found');
+  }
+
+  // Calculate ban expiry for temporary bans
+  let banExpiresAt = null;
+  if (banType === 'TEMPORARY') {
+    banExpiresAt = new Date();
+    banExpiresAt.setDate(banExpiresAt.getDate() + parseInt(duration));
+  }
+
+  // Update mechanic with ban info
+  mechanic.status = 'BANNED';
+  mechanic.isOnline = false;
+  mechanic.banInfo = {
+    isBanned: true,
+    banType,
+    banReason: reason,
+    bannedAt: new Date(),
+    bannedBy: req.admin.id,
+    banExpiresAt,
+    unbanReason: null,
+    unbannedAt: null,
+    unbannedBy: null,
+  };
+  // Clear refresh token to force logout
+  mechanic.refreshTokenHash = null;
+  await mechanic.save();
+
+  ApiResponse.success(res, { mechanic }, `Mechanic banned ${banType === 'PERMANENT' ? 'permanently' : `for ${duration} days`}`);
+});
+
+/**
+ * Unban a mechanic
+ * POST /api/admin/mechanics/:id/unban
+ */
+const unbanMechanic = asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+
+  const mechanic = await Mechanic.findById(req.params.id);
+  if (!mechanic) {
+    return ApiResponse.notFound(res, 'Mechanic not found');
+  }
+
+  if (!mechanic.banInfo?.isBanned) {
+    return ApiResponse.badRequest(res, 'Mechanic is not banned');
+  }
+
+  // Update mechanic - remove ban
+  mechanic.status = 'ACTIVE';
+  mechanic.banInfo.isBanned = false;
+  mechanic.banInfo.unbanReason = reason || 'Unbanned by admin';
+  mechanic.banInfo.unbannedAt = new Date();
+  mechanic.banInfo.unbannedBy = req.admin.id;
+  await mechanic.save();
+
+  ApiResponse.success(res, { mechanic }, 'Mechanic unbanned successfully');
 });
 
 // ==================== BOOKING MANAGEMENT ====================
@@ -375,32 +536,19 @@ const getDashboardStats = asyncHandler(async (req, res) => {
 
   ApiResponse.success(res, {
     stats: {
-      users: {
-        total: totalUsers,
-      },
-      mechanics: {
-        total: totalMechanics,
-        approved: approvedMechanics,
-        pending: pendingMechanics,
-      },
-      bookings: {
-        total: totalBookings,
-        active: activeBookings,
-        completed: completedBookings,
-        today: todayBookings,
-      },
-      revenue: {
-        thisMonth: monthlyRevenue[0]?.total || 0,
-      },
+      totalUsers,
+      totalMechanics,
+      activeBookings,
+      totalRevenue: monthlyRevenue[0]?.total || 0,
     },
     recentBookings: recentBookings.map(b => ({
-      id: b._id,
+      _id: b._id,
       bookingId: b.bookingId,
-      user: b.userId?.name || 'Unknown',
-      mechanic: b.mechanicId?.fullName || 'Not assigned',
-      service: b.serviceSnapshot?.name || 'Unknown',
+      userName: b.userId?.name || 'Unknown',
+      mechanicName: b.mechanicId?.fullName || 'Not assigned',
+      serviceNames: b.serviceSnapshot ? [b.serviceSnapshot.name] : [],
       status: b.status,
-      amount: b.pricing?.totalAmount || 0,
+      totalPrice: b.pricing?.totalAmount || 0,
       createdAt: b.createdAt,
     })),
   });
@@ -411,10 +559,14 @@ module.exports = {
   getAllUsers,
   getUserById,
   updateUserStatus,
+  banUser,
+  unbanUser,
   // Mechanics
   getAllMechanics,
   getMechanicById,
   updateMechanicStatus,
+  banMechanic,
+  unbanMechanic,
   // Bookings
   getAllBookings,
   getBookingById,

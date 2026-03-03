@@ -245,6 +245,31 @@ const notificationValidations = {
   }),
 };
 
+// Complaint validations
+const complaintValidations = {
+  create: Joi.object({
+    bookingId: schemas.objectId.required(),
+    title: Joi.string().min(5).max(100).required().messages({
+      'string.min': 'Title must be at least 5 characters',
+      'string.max': 'Title must not exceed 100 characters',
+    }),
+    description: Joi.string().min(10).max(1000).required().messages({
+      'string.min': 'Description must be at least 10 characters',
+      'string.max': 'Description must not exceed 1000 characters',
+    }),
+    category: Joi.string().valid('QUALITY_ISSUE', 'BEHAVIOR', 'PRICING', 'TIME_ISSUE', 'OTHER').required(),
+    severity: Joi.string().valid('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'),
+    images: Joi.array().items(Joi.string().uri()),
+  }),
+  
+  updateAdmin: Joi.object({
+    status: Joi.string().valid('OPEN', 'IN_REVIEW', 'RESOLVED', 'REJECTED', 'CLOSED'),
+    adminNotes: Joi.string().max(500),
+    resolution: Joi.string().max(500),
+    refundAmount: Joi.number().min(0),
+  }),
+};
+
 module.exports = {
   validate,
   schemas,
@@ -255,4 +280,5 @@ module.exports = {
   mechanicValidations,
   referralValidations,
   notificationValidations,
+  complaintValidations,
 };

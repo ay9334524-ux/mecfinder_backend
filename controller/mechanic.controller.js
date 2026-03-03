@@ -8,6 +8,65 @@ const ApiResponse = require('../utils/apiResponse');
 const { asyncHandler } = require('../middleware/error.middleware');
 
 /**
+ * Helper function to determine title based on total jobs completed
+ */
+const getTitleForJobs = (totalJobs) => {
+  if (totalJobs <= 5) return 'NEW';
+  if (totalJobs <= 25) return 'BEGINNER';
+  if (totalJobs <= 50) return 'INTERMEDIATE';
+  if (totalJobs <= 100) return 'BRONZE';
+  if (totalJobs <= 150) return 'SILVER';
+  if (totalJobs <= 200) return 'GOLD';
+  if (totalJobs <= 250) return 'PLATINUM';
+  if (totalJobs <= 300) return 'DIAMOND';
+  if (totalJobs <= 400) return 'ACE';
+  if (totalJobs <= 500) return 'CONQUEROR';
+  return 'MASTER';
+};
+
+/**
+ * Helper function to get all title thresholds for progression
+ */
+const getTitleThresholds = () => {
+  return [
+    { title: 'NEW', maxJobs: 5 },
+    { title: 'BEGINNER', maxJobs: 25 },
+    { title: 'INTERMEDIATE', maxJobs: 50 },
+    { title: 'BRONZE', maxJobs: 100 },
+    { title: 'SILVER', maxJobs: 150 },
+    { title: 'GOLD', maxJobs: 200 },
+    { title: 'PLATINUM', maxJobs: 250 },
+    { title: 'DIAMOND', maxJobs: 300 },
+    { title: 'ACE', maxJobs: 400 },
+    { title: 'CONQUEROR', maxJobs: 500 },
+    { title: 'MASTER', maxJobs: Infinity }
+  ];
+};
+
+/**
+ * Helper function to check and update mechanic title
+ */
+const updateMechanicTitle = async (mechanicId, totalJobs) => {
+  const newTitle = getTitleForJobs(totalJobs);
+  const mechanic = await Mechanic.findById(mechanicId);
+  
+  if (mechanic && mechanic.currentTitle !== newTitle) {
+    // Title has changed - add to unlock history
+    mechanic.titleUnlockHistory.push({
+      title: newTitle,
+      unlockedAt: new Date(),
+      jobsCompletedAtUnlock: totalJobs
+    });
+    mechanic.currentTitle = newTitle;
+    await mechanic.save();
+    
+    return { titleChanged: true, newTitle, previousTitle: mechanic.currentTitle };
+  }
+  
+  return { titleChanged: false, currentTitle: newTitle };
+};
+
+/**
  * Get mechanic profile
  * GET /api/mechanic/profile
  */
@@ -236,6 +295,15 @@ const updateLocation = asyncHandler(async (req, res) => {
     updateData.isOnline = isOnline;
   }
 
+  // Update GeoJSON location for $nearSphere queries
+  if (latitude && longitude) {
+    updateData['location.type'] = 'Point';
+    updateData['location.coordinates'] = [longitude, latitude]; // GeoJSON: [lng, lat]
+    updateData['lastLocation.lat'] = latitude;
+    updateData['lastLocation.lng'] = longitude;
+    updateData['lastLocation.updatedAt'] = new Date();
+  }
+
   const mechanic = await Mechanic.findByIdAndUpdate(
     req.mechanic.id,
     { $set: updateData },
@@ -320,6 +388,81 @@ const getStats = asyncHandler(async (req, res) => {
       totalJobs: mechanic.totalJobsCompleted || 0,
       totalEarnings: mechanic.totalEarnings || 0,
     },
+  });
+});
+
+/**
+ * Get today's stats (only completed jobs from today)
+ * GET /api/mechanic/stats/today
+ */
+const getTodayStats = asyncHandler(async (req, res) => {
+  const Booking = require('../models/Booking');
+  
+  // Get start and end of today
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  // Get completed bookings for today
+  const completedToday = await Booking.find({
+    mechanicId: req.mechanic.id,
+    status: 'COMPLETED',
+    completedAt: { $gte: today, $lt: tomorrow },
+  });
+
+  // Calculate today's stats
+  let todayEarnings = 0;
+  let todayJobs = 0;
+  let todayRating = 0;
+  let ratingCount = 0;
+
+  completedToday.forEach(booking => {
+    todayJobs++;
+    todayEarnings += booking.pricing?.mechanicEarning || 0;
+    
+    if (booking.rating && booking.rating > 0) {
+      todayRating += booking.rating;
+      ratingCount++;
+    }
+  });
+
+  const avgRating = ratingCount > 0 ? todayRating / ratingCount : 0;
+  const mechanic = await Mechanic.findById(req.mechanic.id)
+    .select('ratingAverage ratingCount totalJobsCompleted currentTitle titleUnlockHistory');
+
+  // Determine current title and check if new title was unlocked
+  const currentTitle = mechanic?.currentTitle || 'NEW';
+  let titleUnlocked = null;
+  
+  if (mechanic?.titleUnlockHistory && mechanic.titleUnlockHistory.length > 0) {
+    const lastUnlock = mechanic.titleUnlockHistory[mechanic.titleUnlockHistory.length - 1];
+    // Check if title was just unlocked today
+    const lastUnlockDate = new Date(lastUnlock.unlockedAt);
+    lastUnlockDate.setHours(0, 0, 0, 0);
+    if (lastUnlockDate.getTime() === today.getTime()) {
+      titleUnlocked = {
+        title: lastUnlock.title,
+        unlockedAt: lastUnlock.unlockedAt,
+        jobsCompletedAtUnlock: lastUnlock.jobsCompletedAtUnlock
+      };
+    }
+  }
+
+  ApiResponse.success(res, {
+    today: {
+      jobsDone: todayJobs,
+      earnings: Math.round(todayEarnings),
+      rating: parseFloat(avgRating.toFixed(1)),
+      ratingCount: ratingCount,
+    },
+    overall: {
+      rating: mechanic?.ratingAverage || 0,
+      reviewCount: mechanic?.ratingCount || 0,
+      totalJobs: mechanic?.totalJobsCompleted || 0,
+      currentTitle: currentTitle,
+    },
+    titleUnlocked: titleUnlocked,
   });
 });
 
@@ -545,6 +688,48 @@ const getWithdrawals = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Update FCM token for push notifications
+ * POST /api/mechanic/fcm-token
+ */
+const updateFcmToken = asyncHandler(async (req, res) => {
+  const { fcmToken } = req.body;
+
+  if (!fcmToken) {
+    return ApiResponse.badRequest(res, 'FCM token is required');
+  }
+
+  const mechanic = await Mechanic.findByIdAndUpdate(
+    req.mechanic.id,
+    { fcmToken },
+    { new: true }
+  ).select('fcmToken');
+
+  if (!mechanic) {
+    return ApiResponse.notFound(res, 'Mechanic not found');
+  }
+
+  ApiResponse.success(res, { mechanic }, 'FCM token updated successfully');
+});
+
+/**
+ * Clear FCM token
+ * DELETE /api/mechanic/fcm-token
+ */
+const clearFcmToken = asyncHandler(async (req, res) => {
+  const mechanic = await Mechanic.findByIdAndUpdate(
+    req.mechanic.id,
+    { $unset: { fcmToken: 1 } },
+    { new: true }
+  );
+
+  if (!mechanic) {
+    return ApiResponse.notFound(res, 'Mechanic not found');
+  }
+
+  ApiResponse.success(res, null, 'FCM token cleared successfully');
+});
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -556,9 +741,13 @@ module.exports = {
   updateLocation,
   toggleOnline,
   getStats,
+  getTodayStats,
   deleteAccount,
   // Wallet & Withdrawals
   getWallet,
   requestWithdrawal,
   getWithdrawals,
+  // FCM Token
+  updateFcmToken,
+  clearFcmToken,
 };

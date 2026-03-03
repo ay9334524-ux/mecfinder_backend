@@ -1,12 +1,17 @@
 {
   "name": "mecfinder",
   "version": "1.0.0",
-  "description": "development",
+  "description": "MecFinder Backend API — Production Ready",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "prod": "pm2 start ecosystem.config.js --env production",
+    "prod:stop": "pm2 stop mecfinder",
+    "prod:restart": "pm2 reload mecfinder",
+    "prod:logs": "pm2 logs mecfinder",
+    "prod:monit": "pm2 monit",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Arju Srivastava",
   "license": "ISC",
@@ -28,9 +33,11 @@
     "mongoose": "^9.1.5",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
+    "rate-limit-redis": "^4.3.1",
     "razorpay": "^2.9.6",
     "redis": "^5.10.0",
     "socket.io": "^4.8.3",
+    "twilio": "^5.12.2",
     "uuid": "^13.0.0",
     "winston": "^3.19.0"
   },

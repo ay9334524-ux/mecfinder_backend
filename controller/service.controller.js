@@ -11,11 +11,14 @@ const generateSlug = (name) => {
 // Get all categories
 const getAllCategories = async (req, res) => {
   try {
-    const categories = await ServiceCategory.find().sort({ name: 1 });
-    return res.status(200).json({ categories });
+    const categories = await ServiceCategory.find({ status: 'ACTIVE' }).sort({ name: 1 });
+    return res.status(200).json({ 
+      success: true, 
+      data: { categories } 
+    });
   } catch (error) {
     console.error('Error fetching categories:', error);
-    return res.status(500).json({ message: 'Internal server error.' });
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 };
 
@@ -77,20 +80,26 @@ const updateCategoryStatus = async (req, res) => {
 // Get all services
 const getAllServices = async (req, res) => {
   try {
-    const { categoryId, status } = req.query;
+    const { categoryId, status, vehicleType } = req.query;
     const filter = {};
     
     if (categoryId) filter.categoryId = categoryId;
     if (status) filter.status = status;
+    else filter.status = 'ACTIVE'; // Default to active services only
+    
+    if (vehicleType) filter.vehicleTypes = vehicleType;
 
     const services = await Service.find(filter)
       .populate('categoryId', 'name slug icon')
       .sort({ name: 1 });
 
-    return res.status(200).json({ services });
+    return res.status(200).json({ 
+      success: true, 
+      data: { services } 
+    });
   } catch (error) {
     console.error('Error fetching services:', error);
-    return res.status(500).json({ message: 'Internal server error.' });
+    return res.status(500).json({ success: false, message: 'Internal server error.' });
   }
 };
 

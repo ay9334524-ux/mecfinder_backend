@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Mechanic = require('../models/Mechanic');
 const twilioService = require('../services/twilio.service');
 const tokenService = require('../services/token.service');
+const notificationService = require('../services/notification.service');
 
 const PHONE_REGEX = /^\+91[6-9]\d{9}$/;
 
@@ -92,12 +93,68 @@ const verifyOtp = async (req, res) => {
 
     // CASE A: Account exists - login
     if (account) {
-      // Check if banned/suspended
+      // Check if banned with detailed ban info
+      if (account.banInfo?.isBanned) {
+        // Check if temporary ban has expired
+        if (account.banInfo.banType === 'TEMPORARY' && account.banInfo.banExpiresAt) {
+          const now = new Date();
+          if (now >= new Date(account.banInfo.banExpiresAt)) {
+            // Ban has expired - auto unban
+            account.status = 'ACTIVE';
+            account.banInfo.isBanned = false;
+            account.banInfo.unbanReason = 'Ban expired automatically';
+            account.banInfo.unbannedAt = now;
+            await account.save();
+            // Continue with login below
+          } else {
+            // Ban still active - return detailed info
+            const expiresAt = new Date(account.banInfo.banExpiresAt);
+            const remainingMs = expiresAt - now;
+            const remainingDays = Math.ceil(remainingMs / (1000 * 60 * 60 * 24));
+            const remainingHours = Math.ceil(remainingMs / (1000 * 60 * 60));
+            
+            let banMessage = `Your account is temporarily banned for ${remainingDays} more days.`;
+            if (remainingDays <= 1) {
+              banMessage = `Your account is temporarily banned for ${remainingHours} more hours.`;
+            }
+            
+            return res.status(403).json({
+              success: false,
+              message: banMessage,
+              code: 'ACCOUNT_BANNED',
+              banDetails: {
+                isBanned: true,
+                banType: 'TEMPORARY',
+                reason: account.banInfo.banReason,
+                bannedAt: account.banInfo.bannedAt,
+                expiresAt: account.banInfo.banExpiresAt,
+                remainingDays,
+                remainingHours,
+              }
+            });
+          }
+        } else {
+          // Permanent ban
+          return res.status(403).json({
+            success: false,
+            message: 'Your account has been permanently banned.',
+            code: 'ACCOUNT_BANNED',
+            banDetails: {
+              isBanned: true,
+              banType: 'PERMANENT',
+              reason: account.banInfo.banReason,
+              bannedAt: account.banInfo.bannedAt,
+            }
+          });
+        }
+      }
+      
+      // Check legacy status field
       if (account.status === 'BANNED') {
-        return res.status(403).json({ success: false, message: 'Account is banned' });
+        return res.status(403).json({ success: false, message: 'Account is banned', code: 'ACCOUNT_BANNED' });
       }
       if (account.status === 'SUSPENDED') {
-        return res.status(403).json({ success: false, message: 'Account is suspended' });
+        return res.status(403).json({ success: false, message: 'Account is suspended', code: 'ACCOUNT_SUSPENDED' });
       }
 
       // Generate tokens
@@ -188,6 +245,13 @@ const registerUser = async (req, res) => {
     user.refreshTokenHash = tokenService.hashToken(tokens.refreshToken);
 
     await user.save();
+
+    // Send welcome notification
+    try {
+      await notificationService.sendWelcomeNotification(user._id);
+    } catch (error) {
+      console.error('Error sending welcome notification:', error);
+    }
 
     const profile = user.toObject();
     delete profile.refreshTokenHash;

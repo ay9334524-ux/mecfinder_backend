@@ -17,6 +17,7 @@ router.get('/profile', mechanicController.getProfile);
 router.put('/profile', validate(mechanicValidations.updateProfile), mechanicController.updateProfile);
 router.post('/photo', uploadLimiter, uploadImage.single('photo'), handleMulterError, mechanicController.uploadPhoto);
 router.get('/stats', mechanicController.getStats);
+router.get('/stats/today', mechanicController.getTodayStats);
 
 // Bank details
 router.get('/bank-details', mechanicController.getBankDetails);
@@ -43,12 +44,19 @@ router.get('/wallet', mechanicController.getWallet);
 router.post('/withdraw', mechanicController.requestWithdrawal);
 router.get('/withdrawals', mechanicController.getWithdrawals);
 
+// FCM Token for Push Notifications
+router.post('/fcm-token', mechanicController.updateFcmToken);
+router.delete('/fcm-token', mechanicController.clearFcmToken);
+
 // Jobs
 router.get('/jobs', bookingController.getMechanicJobs);
+router.get('/bookings/current', bookingController.getCurrentBooking);
+router.get('/bookings/history', bookingController.getMechanicBookingHistory);
 router.post('/job/:id/accept', bookingController.acceptJob);
 router.put('/job/:id/status', bookingController.updateJobStatus);
 router.post('/job/:id/confirm-payment', bookingController.confirmPayment);
 router.post('/job/:id/reject', bookingController.rejectJob);
+router.post('/job/:id/cancel', bookingController.cancelJobByMechanic);
 
 // Account
 router.delete('/account', mechanicController.deleteAccount);

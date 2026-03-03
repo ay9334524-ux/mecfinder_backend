@@ -8,6 +8,9 @@ const { bookingLimiter, paymentLimiter } = require('../middleware/rateLimiter.mi
 // All routes require user authentication
 router.use(authenticateToken);
 
+// Debug endpoint to check nearby mechanics (helps troubleshoot "no mechanics available")
+router.get('/check-mechanics', bookingController.checkNearbyMechanics);
+
 // Booking routes
 router.post('/', bookingLimiter, validate(bookingValidations.create), bookingController.createBooking);
 router.get('/', bookingController.getUserBookings);

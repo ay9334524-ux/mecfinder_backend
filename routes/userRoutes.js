@@ -17,6 +17,10 @@ router.put('/location', validate(userValidations.updateLocation), userController
 // Account management
 router.delete('/account', userController.deleteAccount);
 
+// FCM Token for Push Notifications
+router.post('/fcm-token', userController.updateFcmToken);
+router.delete('/fcm-token', userController.clearFcmToken);
+
 // Addresses (future feature)
 router.get('/addresses', userController.getAddresses);
 

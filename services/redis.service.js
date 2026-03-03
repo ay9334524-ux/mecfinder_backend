@@ -205,8 +205,35 @@ class RedisService {
     });
   }
 
+  async updateMechanicLocation(mechanicId, locationData) {
+    const { lat, lng, heading, speed, updatedAt } = locationData;
+    
+    // Update geospatial index
+    await this.client.geoAdd('mechanic:locations', {
+      longitude: lng,
+      latitude: lat,
+      member: mechanicId,
+    });
+    
+    // Store additional location metadata
+    const key = `mechanic:location:${mechanicId}`;
+    await this.set(key, {
+      lat,
+      lng,
+      heading,
+      speed,
+      updatedAt,
+    }, 300); // 5 min expiry
+  }
+
+  async getMechanicLocation(mechanicId) {
+    const key = `mechanic:location:${mechanicId}`;
+    return await this.get(key);
+  }
+
   async removeMechanicLocation(mechanicId) {
     await this.client.zRem('mechanic:locations', mechanicId);
+    await this.delete(`mechanic:location:${mechanicId}`);
   }
 
   async getNearbyMechanics(longitude, latitude, radiusKm = 10) {

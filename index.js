@@ -27,6 +27,9 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const helpRoutes = require('./routes/helpRoutes');
 const mechanicRoutes = require('./routes/mechanicRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
+const couponRoutes = require('./routes/couponRoutes');
+const complaintRoutes = require('./routes/complaintRoutes');
+const reviewRoutes = require('./routes/reviewRoutes');
 
 // Import middleware
 const { errorHandler, notFoundHandler } = require('./middleware/error.middleware');
@@ -69,12 +72,40 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ 
+// Deep health check — verifies actual connectivity
+app.get('/health', async (req, res) => {
+  const health = {
     status: 'healthy',
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    redis: redisService.isConnected ? 'connected' : 'disconnected',
-  });
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    mongodb: 'error',
+    redis: 'error',
+  };
+
+  try {
+    // Deep MongoDB check — actually ping the database
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.connection.db.admin().ping();
+      health.mongodb = 'ok';
+    }
+  } catch (mongoError) {
+    health.mongodb = mongoError.message;
+    health.status = 'degraded';
+  }
+
+  try {
+    // Deep Redis check — actually ping Redis
+    if (redisService.isConnected && redisService.client) {
+      const pong = await redisService.client.ping();
+      health.redis = pong === 'PONG' ? 'ok' : 'error';
+    }
+  } catch (redisError) {
+    health.redis = redisError.message;
+    health.status = 'degraded';
+  }
+
+  const statusCode = health.status === 'healthy' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
 
 // API Routes
@@ -94,6 +125,9 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/help', helpRoutes);
 app.use('/api/mechanic', mechanicRoutes);
 app.use('/api/booking', bookingRoutes);
+app.use('/api/coupons', couponRoutes);
+app.use('/api/complaints', complaintRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // 404 handler
 app.use(notFoundHandler);
@@ -104,9 +138,12 @@ app.use(errorHandler);
 // Create HTTP server for Socket.io
 const server = http.createServer(app);
 
+// Request timeout — prevent slow requests from holding connections
+server.timeout = 30000; // 30 seconds
+
 // Start server
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI ;
+const MONGO_URI = process.env.MONGO_URI;
 
 const startServer = async () => {
   try {
@@ -133,12 +170,26 @@ const startServer = async () => {
     await socketService.initialize(server);
     logger.info('✅ Socket.io initialized');
 
+    // Restore active booking queues from Redis (survives server restart)
+    try {
+      const bookingQueueService = require('./services/bookingQueue.service');
+      await bookingQueueService.restoreQueues();
+      logger.info('✅ Booking queues restored from Redis');
+    } catch (queueError) {
+      logger.warn('⚠️ Failed to restore booking queues:', { error: queueError.message });
+    }
+
     // Start HTTP server - listen on 0.0.0.0 to allow connections from other devices
     const HOST = '0.0.0.0';
     server.listen(PORT, HOST, () => {
       logger.info(`🚀 Server is running on http://${HOST}:${PORT}`);
       logger.info(`📚 API Documentation: http://localhost:${PORT}/api`);
       logger.info(`🔌 WebSocket ready on ws://localhost:${PORT}`);
+      
+      // Signal PM2 that the app is ready (for zero-downtime reloads)
+      if (process.send) {
+        process.send('ready');
+      }
     });
   } catch (error) {
     logger.error('❌ Failed to start server:', { error: error.message, stack: error.stack });
@@ -146,19 +197,69 @@ const startServer = async () => {
   }
 };
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received. Shutting down gracefully...');
-  await redisService.disconnect();
-  await mongoose.connection.close();
-  process.exit(0);
+/**
+ * Graceful shutdown handler — PRODUCTION GRADE
+ * Ensures all connections are properly closed before exit
+ */
+const gracefulShutdown = async (signal) => {
+  logger.info(`${signal} received. Shutting down gracefully...`);
+  
+  // Stop accepting new connections
+  server.close(async (err) => {
+    if (err) {
+      logger.error('Error closing HTTP server:', { error: err.message });
+    }
+    
+    try {
+      // 1. Clean up active booking queues (clear timers)
+      const bookingQueueService = require('./services/bookingQueue.service');
+      for (const [bookingId] of bookingQueueService.activeQueues) {
+        await bookingQueueService.cleanupQueue(bookingId);
+      }
+      logger.info('✅ Booking queues cleaned up');
+      
+      // 2. Close Socket.io connections
+      if (socketService.io) {
+        socketService.io.close();
+        logger.info('✅ Socket.io closed');
+      }
+      
+      // 3. Disconnect Redis
+      await redisService.disconnect();
+      logger.info('✅ Redis disconnected');
+      
+      // 4. Close MongoDB connection
+      await mongoose.connection.close();
+      logger.info('✅ MongoDB disconnected');
+      
+      logger.info('🛑 Server shut down complete');
+      process.exit(0);
+    } catch (shutdownError) {
+      logger.error('Error during shutdown:', { error: shutdownError.message });
+      process.exit(1);
+    }
+  });
+  
+  // Force exit after 30 seconds if graceful shutdown fails
+  setTimeout(() => {
+    logger.error('⚠️ Forced shutdown after 30s timeout');
+    process.exit(1);
+  }, 30000).unref();
+};
+
+// Graceful shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', { error: error.message, stack: error.stack });
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
 });
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received. Shutting down gracefully...');
-  await redisService.disconnect();
-  await mongoose.connection.close();
-  process.exit(0);
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection:', { reason: reason?.message || reason, promise });
 });
 
 startServer();

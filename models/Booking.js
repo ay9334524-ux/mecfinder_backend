@@ -76,8 +76,9 @@ const bookingSchema = new mongoose.Schema({
       'ARRIVED',        // Mechanic arrived at location
       'IN_PROGRESS',    // Work in progress
       'COMPLETED',      // Work completed
-      'CANCELLED',      // Cancelled by user or mechanic
-      'EXPIRED',        // No mechanic found
+      'CANCELLED',              // Cancelled by user or mechanic
+      'EXPIRED',                // No mechanic found
+      'NO_MECHANIC_AVAILABLE',  // All mechanics declined or none found
     ],
     default: 'PENDING',
   },
@@ -172,7 +173,35 @@ const bookingSchema = new mongoose.Schema({
   estimatedArrival: Number, // Minutes
   estimatedCompletion: Number, // Minutes
   actualDuration: Number,   // Minutes
+
+  // Status history for audit trail
+  statusHistory: [{
+    status: String,
+    timestamp: { type: Date, default: Date.now },
+    note: String,
+    notes: String,
+    mechanicId: { type: mongoose.Schema.Types.ObjectId, ref: 'Mechanic' },
+  }],
+
+  // Mechanic cancel reason (used by cancelJobByMechanic)
+  cancelReason: String,
+
+  // Idempotency key to prevent duplicate bookings
+  idempotencyKey: {
+    type: String,
+    sparse: true,
+    unique: true,
+  },
   
+  // Dispatch metadata
+  dispatchInfo: {
+    totalMechanicsNotified: { type: Number, default: 0 },
+    totalRejections: { type: Number, default: 0 },
+    totalTimeouts: { type: Number, default: 0 },
+    assignedFromPosition: Number, // Which queue position accepted
+    searchRadiusKm: Number,
+  },
+
 }, {
   timestamps: true,
 });
@@ -187,6 +216,8 @@ bookingSchema.index({ mechanicId: 1, createdAt: -1 });
 bookingSchema.index({ status: 1 });
 bookingSchema.index({ bookingId: 1 });
 bookingSchema.index({ paymentStatus: 1 });
+bookingSchema.index({ idempotencyKey: 1 }, { sparse: true });
+bookingSchema.index({ userId: 1, status: 1 }); // For active booking check
 
 // Auto-generate booking ID
 bookingSchema.pre('save', async function() {

@@ -57,21 +57,75 @@ const requireActiveStatus = async (req, res, next) => {
 
     let account = null;
     if (role === 'USER') {
-      account = await User.findById(id).select('status');
+      account = await User.findById(id).select('status banInfo');
     } else if (role === 'MECHANIC') {
-      account = await Mechanic.findById(id).select('status');
+      account = await Mechanic.findById(id).select('status banInfo');
     }
 
     if (!account) {
       return res.status(404).json({ success: false, message: 'Account not found' });
     }
 
+    // Check if banned
+    if (account.banInfo?.isBanned) {
+      // Check if temporary ban has expired
+      if (account.banInfo.banType === 'TEMPORARY' && account.banInfo.banExpiresAt) {
+        const now = new Date();
+        if (now >= new Date(account.banInfo.banExpiresAt)) {
+          // Ban has expired - auto unban
+          account.status = 'ACTIVE';
+          account.banInfo.isBanned = false;
+          account.banInfo.unbanReason = 'Ban expired automatically';
+          account.banInfo.unbannedAt = now;
+          await account.save();
+          // Continue with request
+          return next();
+        }
+      }
+
+      // Calculate remaining ban time for temporary bans
+      let banMessage = 'Your account has been permanently banned.';
+      let banDetails = {
+        isBanned: true,
+        banType: account.banInfo.banType,
+        reason: account.banInfo.banReason,
+        bannedAt: account.banInfo.bannedAt,
+      };
+
+      if (account.banInfo.banType === 'TEMPORARY' && account.banInfo.banExpiresAt) {
+        const expiresAt = new Date(account.banInfo.banExpiresAt);
+        const now = new Date();
+        const remainingMs = expiresAt - now;
+        const remainingDays = Math.ceil(remainingMs / (1000 * 60 * 60 * 24));
+        const remainingHours = Math.ceil(remainingMs / (1000 * 60 * 60));
+        
+        if (remainingDays > 1) {
+          banMessage = `Your account is temporarily banned for ${remainingDays} more days.`;
+        } else if (remainingHours > 1) {
+          banMessage = `Your account is temporarily banned for ${remainingHours} more hours.`;
+        } else {
+          banMessage = `Your account is temporarily banned. Ban expires soon.`;
+        }
+        
+        banDetails.expiresAt = account.banInfo.banExpiresAt;
+        banDetails.remainingDays = remainingDays;
+        banDetails.remainingHours = remainingHours;
+      }
+
+      return res.status(403).json({
+        success: false,
+        message: banMessage,
+        code: 'ACCOUNT_BANNED',
+        banDetails,
+      });
+    }
+
     if (account.status === 'BANNED') {
-      return res.status(403).json({ success: false, message: 'Account is banned' });
+      return res.status(403).json({ success: false, message: 'Account is banned', code: 'ACCOUNT_BANNED' });
     }
 
     if (account.status === 'SUSPENDED') {
-      return res.status(403).json({ success: false, message: 'Account is suspended' });
+      return res.status(403).json({ success: false, message: 'Account is suspended', code: 'ACCOUNT_SUSPENDED' });
     }
 
     if (role === 'MECHANIC' && account.status === 'PENDING') {

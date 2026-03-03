@@ -132,6 +132,43 @@ const getAddresses = asyncHandler(async (req, res) => {
   ApiResponse.success(res, { addresses: [] }, 'Addresses retrieved');
 });
 
+/**
+ * Update FCM token for push notifications
+ * POST /api/user/fcm-token
+ */
+const updateFcmToken = asyncHandler(async (req, res) => {
+  const { fcmToken } = req.body;
+  
+  if (!fcmToken) {
+    return ApiResponse.badRequest(res, 'FCM token is required');
+  }
+
+  const user = await User.findByIdAndUpdate(
+    req.user.id,
+    { $set: { fcmToken } },
+    { new: true }
+  ).select('-refreshTokenHash');
+
+  if (!user) {
+    return ApiResponse.notFound(res, 'User not found');
+  }
+
+  ApiResponse.success(res, { success: true }, 'FCM token updated successfully');
+});
+
+/**
+ * Clear FCM token (on logout)
+ * DELETE /api/user/fcm-token
+ */
+const clearFcmToken = asyncHandler(async (req, res) => {
+  await User.findByIdAndUpdate(
+    req.user.id,
+    { $set: { fcmToken: null } }
+  );
+
+  ApiResponse.success(res, { success: true }, 'FCM token cleared successfully');
+});
+
 module.exports = {
   getProfile,
   updateProfile,
@@ -139,4 +176,6 @@ module.exports = {
   updateLocation,
   deleteAccount,
   getAddresses,
+  updateFcmToken,
+  clearFcmToken,
 };

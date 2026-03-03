@@ -33,7 +33,7 @@ const userRewardSchema = new mongoose.Schema({
     points: Number,
     source: {
       type: String,
-      enum: ['BOOKING', 'REFERRAL', 'REVIEW', 'PROMO', 'SIGNUP', 'BIRTHDAY', 'ADMIN'],
+      enum: ['BOOKING', 'REFERRAL', 'REVIEW', 'PROMO', 'SIGNUP', 'BIRTHDAY', 'ADMIN', 'FIRST_BOOKING_BONUS'],
     },
     referenceId: String, // Booking ID, etc.
     description: String,
