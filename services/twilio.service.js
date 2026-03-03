@@ -13,6 +13,10 @@ const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const DEV_MODE = !IS_PRODUCTION && process.env.DEV_OTP === 'true';
 
+// TEST OTP: Allow 123456 as a valid OTP for testing (can be disabled via DISABLE_TEST_OTP=true)
+const ALLOW_TEST_OTP = process.env.DISABLE_TEST_OTP !== 'true';
+const TEST_OTP = '123456';
+
 // Generate random 6-digit OTP
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -26,10 +30,19 @@ if (IS_PRODUCTION) {
     process.exit(1);
   }
   console.log('✅ Twilio WhatsApp OTP service configured for production');
+  if (ALLOW_TEST_OTP) {
+    console.log('⚠️ TEST OTP (123456) is enabled. Set DISABLE_TEST_OTP=true to disable.');
+  }
 } else if (DEV_MODE) {
   console.warn('⚠️ DEV MODE: Generating OTP via WhatsApp - NOT FOR PRODUCTION!');
+  if (ALLOW_TEST_OTP) {
+    console.log('📱 TEST OTP (123456) is enabled for testing');
+  }
 } else if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
   console.warn('⚠️ Twilio credentials not configured. Set DEV_OTP=true to use dev mode.');
+  if (ALLOW_TEST_OTP) {
+    console.log('📱 TEST OTP (123456) is enabled for testing');
+  }
 }
 
 // Initialize Twilio client
@@ -97,6 +110,19 @@ const sendOtp = async (phone) => {
 
 const verifyOtp = async (phone, code) => {
   try {
+    // TEST OTP: Allow 123456 for testing purposes (can be disabled in production)
+    if (ALLOW_TEST_OTP && code.toString().trim() === TEST_OTP) {
+      console.log(`✅ TEST OTP (123456) accepted for ${phone}`);
+      // Clean up any existing OTP data for this phone
+      otpStore.delete(phone);
+      return {
+        success: true,
+        status: 'approved',
+        valid: true,
+        testMode: true
+      };
+    }
+
     const otpData = otpStore.get(phone);
 
     // Check if OTP exists

@@ -3,6 +3,127 @@ const { RedisStore } = require('rate-limit-redis');
 const ApiResponse = require('../utils/apiResponse');
 const redisService = require('../services/redis.service');
 
+// In-memory store for phone-based OTP rate limiting
+const phoneOtpStore = new Map();
+
+/**
+ * Clean up expired entries from phone OTP store
+ */
+const cleanupPhoneOtpStore = () => {
+  const now = Date.now();
+  for (const [phone, data] of phoneOtpStore.entries()) {
+    if (now > data.resetAt) {
+      phoneOtpStore.delete(phone);
+    }
+  }
+};
+
+// Run cleanup every 10 minutes
+setInterval(cleanupPhoneOtpStore, 10 * 60 * 1000);
+
+/**
+ * Phone-based OTP rate limiter middleware
+ * Limits OTP requests to 5 per phone number per hour
+ */
+const phoneOtpLimiter = (req, res, next) => {
+  const phone = req.body?.phone;
+  
+  if (!phone) {
+    return next(); // Let the controller handle missing phone
+  }
+
+  const now = Date.now();
+  const windowMs = 60 * 60 * 1000; // 1 hour
+  const maxRequests = 5;
+
+  let phoneData = phoneOtpStore.get(phone);
+
+  // If no data exists or window has expired, create new entry
+  if (!phoneData || now > phoneData.resetAt) {
+    phoneData = {
+      count: 1,
+      resetAt: now + windowMs,
+      firstRequestAt: now
+    };
+    phoneOtpStore.set(phone, phoneData);
+    
+    // Add rate limit headers
+    res.setHeader('X-RateLimit-Limit', maxRequests);
+    res.setHeader('X-RateLimit-Remaining', maxRequests - 1);
+    res.setHeader('X-RateLimit-Reset', new Date(phoneData.resetAt).toISOString());
+    
+    return next();
+  }
+
+  // Increment count
+  phoneData.count++;
+
+  // Check if limit exceeded
+  if (phoneData.count > maxRequests) {
+    const remainingMs = phoneData.resetAt - now;
+    const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+    
+    console.log(`🚫 OTP rate limit exceeded for ${phone}. Count: ${phoneData.count}, Resets in: ${remainingMinutes} minutes`);
+    
+    res.setHeader('X-RateLimit-Limit', maxRequests);
+    res.setHeader('X-RateLimit-Remaining', 0);
+    res.setHeader('X-RateLimit-Reset', new Date(phoneData.resetAt).toISOString());
+    res.setHeader('Retry-After', Math.ceil(remainingMs / 1000));
+    
+    return ApiResponse.tooManyRequests(
+      res, 
+      `Too many OTP requests. Please try again in ${remainingMinutes} minute${remainingMinutes > 1 ? 's' : ''}.`
+    );
+  }
+
+  // Update store
+  phoneOtpStore.set(phone, phoneData);
+  
+  // Add rate limit headers
+  res.setHeader('X-RateLimit-Limit', maxRequests);
+  res.setHeader('X-RateLimit-Remaining', maxRequests - phoneData.count);
+  res.setHeader('X-RateLimit-Reset', new Date(phoneData.resetAt).toISOString());
+  
+  console.log(`📊 OTP request for ${phone}. Count: ${phoneData.count}/${maxRequests}`);
+  
+  next();
+};
+
+/**
+ * Get OTP rate limit status for a phone number (for debugging/admin)
+ */
+const getPhoneOtpStatus = (phone) => {
+  const data = phoneOtpStore.get(phone);
+  if (!data) {
+    return { limited: false, count: 0, maxRequests: 5, remainingMinutes: 0 };
+  }
+  
+  const now = Date.now();
+  if (now > data.resetAt) {
+    return { limited: false, count: 0, maxRequests: 5, remainingMinutes: 0 };
+  }
+  
+  const remainingMs = data.resetAt - now;
+  const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+  
+  return {
+    limited: data.count >= 5,
+    count: data.count,
+    maxRequests: 5,
+    remainingMinutes,
+    resetAt: new Date(data.resetAt).toISOString()
+  };
+};
+
+/**
+ * Reset OTP rate limit for a phone number (admin function)
+ */
+const resetPhoneOtpLimit = (phone) => {
+  phoneOtpStore.delete(phone);
+  console.log(`🔄 OTP rate limit reset for ${phone}`);
+  return true;
+};
+
 /**
  * Create Redis store for rate limiting (works across multiple server instances)
  * Falls back to in-memory if Redis is unavailable
@@ -102,6 +223,9 @@ module.exports = {
   apiLimiter,
   authLimiter,
   otpLimiter,
+  phoneOtpLimiter,
+  getPhoneOtpStatus,
+  resetPhoneOtpLimit,
   paymentLimiter,
   bookingLimiter,
   uploadLimiter,
