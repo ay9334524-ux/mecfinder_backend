@@ -1,0 +1,16 @@
+node_modules/
+.env
+*.log
+npm-debug.log*
+
+# Firebase credentials
+mecfinder_firebase.json
+mecfinders-f3da2-firebase-adminsdk-*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

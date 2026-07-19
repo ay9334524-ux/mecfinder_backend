@@ -1,0 +1,108 @@
+const express = require('express');
+const { 
+  registerAdmin, 
+  loginAdmin, 
+  refreshToken,
+  logoutAdmin,
+  getProfile,
+  changePassword
+} = require('../controller/auth.admin');
+const {
+  getAllUsers,
+  getUserById,
+  updateUserStatus,
+  banUser,
+  unbanUser,
+  getAllMechanics,
+  getMechanicById,
+  updateMechanicStatus,
+  banMechanic,
+  unbanMechanic,
+  getAllBookings,
+  getBookingById,
+  updateBookingStatus,
+  getDashboardStats,
+} = require('../controller/admin.management.controller');
+const {
+  getCompanyLedgerSummary,
+  getCompanyLedgerEntries,
+  getSettlements,
+  markSettlementPaid,
+} = require('../controller/settlement.controller');
+const adminPayoutController = require('../controller/admin.payout.controller');
+const adminAuditController = require('../controller/admin.audit.controller');
+const adminSettingsController = require('../controller/admin.settings.controller');
+const bannerController = require('../controller/banner.controller');
+const { authMiddleware, requireSuperAdmin, requireAdmin, requireSupport } = require('../middleware/auth.middleware');
+const { authLimiter } = require('../middleware/rateLimiter.middleware');
+
+const router = express.Router();
+
+// Check if we're in production - disable public registration
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Public routes (no auth required)
+// In production, admin registration requires super admin auth
+if (isProduction) {
+  router.post('/register', authMiddleware, requireSuperAdmin, registerAdmin);
+} else {
+  router.post('/register', registerAdmin); // Only in development
+}
+
+router.post('/login', authLimiter, loginAdmin);
+router.post('/refresh-token', authLimiter, refreshToken);
+
+// Protected routes (auth required)
+router.post('/logout', authMiddleware, logoutAdmin);
+router.get('/profile', authMiddleware, getProfile);
+router.post('/change-password', authMiddleware, changePassword);
+
+// Dashboard stats
+router.get('/dashboard/stats', authMiddleware, getDashboardStats);
+
+// User management routes (Admin only)
+router.get('/users', authMiddleware, requireAdmin, getAllUsers);
+router.get('/users/:id', authMiddleware, requireAdmin, getUserById);
+router.patch('/users/:id/status', authMiddleware, requireAdmin, updateUserStatus);
+router.post('/users/:id/ban', authMiddleware, requireAdmin, banUser);
+router.post('/users/:id/unban', authMiddleware, requireAdmin, unbanUser);
+
+// Mechanic management routes (Admin only)
+router.get('/mechanics', authMiddleware, requireAdmin, getAllMechanics);
+router.get('/mechanics/:id', authMiddleware, requireAdmin, getMechanicById);
+router.patch('/mechanics/:id/status', authMiddleware, requireAdmin, updateMechanicStatus);
+router.post('/mechanics/:id/ban', authMiddleware, requireAdmin, banMechanic);
+router.post('/mechanics/:id/unban', authMiddleware, requireAdmin, unbanMechanic);
+
+// Booking management routes (Support and above)
+router.get('/bookings', authMiddleware, requireSupport, getAllBookings);
+router.get('/bookings/:id', authMiddleware, requireSupport, getBookingById);
+router.patch('/bookings/:id/status', authMiddleware, requireAdmin, updateBookingStatus);
+
+// Cash/UPI settlements (Admin only)
+router.get('/settlements', authMiddleware, requireAdmin, getSettlements);
+router.post('/settlements/:id/mark-paid', authMiddleware, requireAdmin, markSettlementPaid);
+
+// Company ledger (Admin only)
+router.get('/ledger', authMiddleware, requireAdmin, getCompanyLedgerEntries);
+router.get('/ledger/summary', authMiddleware, requireAdmin, getCompanyLedgerSummary);
+
+// Mechanic payouts queue + wallet audit trail
+router.get('/payouts', authMiddleware, requireAdmin, adminPayoutController.listPayouts);
+router.post('/payouts/:id/approve', authMiddleware, requireAdmin, adminPayoutController.approvePayout);
+router.post('/payouts/:id/reject', authMiddleware, requireAdmin, adminPayoutController.rejectPayout);
+router.get('/wallet/logs', authMiddleware, requireAdmin, adminAuditController.listWalletLogs);
+
+// Promotional banners (homepage carousel in the customer app)
+router.get('/banners', authMiddleware, requireAdmin, bannerController.listAllBanners);
+router.post('/banners', authMiddleware, requireAdmin, bannerController.createBanner);
+router.put('/banners/:id', authMiddleware, requireAdmin, bannerController.updateBanner);
+router.delete('/banners/:id', authMiddleware, requireAdmin, bannerController.deleteBanner);
+
+// Platform settings (super admin)
+router.get('/settings', authMiddleware, requireAdmin, adminSettingsController.getSettings);
+router.put('/settings/cash-policy', authMiddleware, requireAdmin, adminSettingsController.updateCashPolicy);
+router.put('/settings/payout-policy', authMiddleware, requireAdmin, adminSettingsController.updatePayoutPolicy);
+router.put('/settings/commission', authMiddleware, requireAdmin, adminSettingsController.updateCommissionPolicy);
+
+module.exports = router;
